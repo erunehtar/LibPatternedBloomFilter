@@ -25,7 +25,7 @@
 -- Based on: https://save-buffer.github.io/bloom_filter.html Section 1.4
 --
 -- Credits:
---   This variant of the standard Bloom filter, proposed by Sasha Krassovsky, uses a
+--   This variant of the standard Bloom Filter, proposed by Sasha Krassovsky, uses a
 --   single hash function with a predetermined pattern of bits, improving efficiency
 --   while maintaining similar false positive rates.
 --
@@ -49,6 +49,12 @@ local tinsert = table.insert
 
 -- Constants
 local LOG2 = log(2)
+local ROTATE_BITS = 5 -- Number of bits for rotation (32 possible rotations)
+local ROTATE_MASK = lshift(1, ROTATE_BITS) - 1 -- Mask for rotation bits
+local PATTERN_BITS = 31 -- Number of bits in each pattern (31 to avoid sign bit issues)
+
+-- Module-level pattern cache
+local patternCache = {}
 
 --- Deterministic PRNG using Linear Congruential Generator.
 --- This ensures all clients generate identical patterns for same parameters.
@@ -103,6 +109,20 @@ local function GeneratePatterns(numPatterns, patternBits, bitsPerPattern)
     return patterns
 end
 
+--- Get or generate patterns from cache.
+--- @param numPatterns number Number of unique patterns.
+--- @param bitsPerPattern number Number of bits set per pattern.
+--- @return number[] patterns Array of bit patterns.
+local function GetPatterns(numPatterns, bitsPerPattern)
+    local key = numPatterns .. ":" .. bitsPerPattern
+    local patterns = patternCache[key]
+    if not patterns then
+        patterns = GeneratePatterns(numPatterns, PATTERN_BITS, bitsPerPattern)
+        patternCache[key] = patterns
+    end
+    return patterns
+end
+
 --- Rotate left for 32-bit integers.
 --- @param value number Input value.
 --- @param shift number Number of bits to rotate.
@@ -135,7 +155,7 @@ local function ConstructMask(self, hash)
     local patternIdx = band(hash, self.patternIndexMask) + 1
 
     -- Extract rotation amount from next bits
-    local rotation = band(rshift(hash, self.patternIndexBits), self.rotateMask)
+    local rotation = band(rshift(hash, self.patternIndexBits), ROTATE_MASK)
 
     -- Load pattern and rotate
     local pattern = self.patterns[patternIdx]
@@ -143,44 +163,36 @@ local function ConstructMask(self, hash)
 end
 
 --- @class LibPatternedBloomFilter Patterned Bloom Filter data structure.
---- @field New fun(numItems: number, falsePositiveRate: number?, numPatterns?: number, bitsPerPattern?: number): LibPatternedBloomFilter
+--- @field New fun(capacity: number, falsePositiveRate: number?, numPatterns?: number, bitsPerPattern?: number): LibPatternedBloomFilter
 --- @field Insert fun(self: LibPatternedBloomFilter, value: any)
 --- @field Contains fun(self: LibPatternedBloomFilter, value: any): boolean
 --- @field Export fun(self: LibPatternedBloomFilter): LibPatternedBloomFilterState
 --- @field Import fun(data: LibPatternedBloomFilterState): LibPatternedBloomFilter
 --- @field Clear fun(self: LibPatternedBloomFilter)
---- @field GetFalsePositiveRate fun(self: LibPatternedBloomFilter): number
+--- @field EstimateFalsePositiveRate fun(self: LibPatternedBloomFilter): number
 --- @field numBits number Total number of bits in the filter.
 --- @field numIntegers number Number of 31-bit integers in the bit array.
---- @field falsePositiveRate number Desired false positive rate.
---- @field numItems number Expected number of items to insert.
---- @field patterns number[] Array of bit patterns.
 --- @field numPatterns number Number of unique bit patterns.
---- @field patternBits number Number of bits in each pattern.
+--- @field patterns number[] Array of bit patterns (cached reference).
 --- @field bitsPerPattern number Number of bits set per pattern.
 --- @field patternIndexBits number Number of bits used for pattern index.
 --- @field patternIndexMask number Bitmask for pattern index extraction.
---- @field rotateBits number Number of bits used for rotation amount.
---- @field rotateMask number Bitmask for rotation amount extraction.
---- @field itemCount number Number of items inserted.
 --- @field bits number[] Bit array represented as array of 31-bit integers.
 
---- @class LibPatternedBloomFilterState Compact representation of Patterned Bloom Filter.
+--- @class LibPatternedBloomFilterState Compact representation of a Patterned Bloom Filter state.
 --- @field [1] number numBits Total number of bits in the filter.
 --- @field [2] number numIntegers Number of 31-bit integers in the bit array.
 --- @field [3] number numPatterns Number of unique bit patterns.
---- @field [4] number patternBits Number of bits in each pattern.
---- @field [5] number bitsPerPattern Number of bits set per pattern.
---- @field [6] number itemCount Number of items inserted.
---- @field [7] number[] Bit array represented as array of 31-bit integers.
+--- @field [4] number bitsPerPattern Number of bits set per pattern.
+--- @field [5] number[] Bit array represented as array of 31-bit integers.
 
 LibPatternedBloomFilter.__index = LibPatternedBloomFilter
 
 --- Create a new Patterned Bloom Filter instance.
---- @param capacity number Capacity of the Patterned Bloom Filter (expected number of values).
---- @param falsePositiveRate number? Desired false positive rate (default: 0.01 which means 1%).
+--- @param capacity number Capacity of the filter (expected number of values).
+--- @param falsePositiveRate number? Desired false positive rate (between 0.0 and 1.0, default: 0.01 which means 1%).
 --- @param numPatterns number? Number of unique bit patterns to generate (default: 256).
---- @param bitsPerPattern number? Number of bits set per pattern (default: 4).
+--- @param bitsPerPattern number? Number of bits set per pattern (between 1 and 31, default: 4).
 --- @return LibPatternedBloomFilter instance The new Patterned Bloom Filter instance.
 function LibPatternedBloomFilter.New(capacity, falsePositiveRate, numPatterns, bitsPerPattern)
     assert(capacity and capacity > 0, "numItems must be a positive number")
@@ -189,7 +201,7 @@ function LibPatternedBloomFilter.New(capacity, falsePositiveRate, numPatterns, b
     bitsPerPattern = bitsPerPattern or 4          -- Default: 4 bits set per pattern
     assert(falsePositiveRate > 0 and falsePositiveRate < 1, "falsePositiveRate must be between 0 and 1")
     assert(numPatterns > 0 and band(numPatterns, numPatterns - 1) == 0, "numPatterns must be a power of two")
-    assert(bitsPerPattern > 0 and bitsPerPattern < 31, "bitsPerPattern must be between 1 and 30")
+    assert(bitsPerPattern > 0 and bitsPerPattern <= PATTERN_BITS, "bitsPerPattern must be between 1 and 31")
 
     -- Calculate optimal number of bits (using standard Bloom formula)
     -- m = -n * ln(p) / (ln(2)^2)
@@ -199,17 +211,14 @@ function LibPatternedBloomFilter.New(capacity, falsePositiveRate, numPatterns, b
     numBits = ceil(numBits / 32) * 32
 
     -- We use 31 bits per integer (avoid sign bit issues)
-    local patternBits = 31
-    local numIntegers = ceil(numBits / 31)
+    local numIntegers = ceil(numBits / PATTERN_BITS)
 
     -- Calculate derived fields
     local patternIndexBits = floor(log(numPatterns) / LOG2)
     local patternIndexMask = numPatterns - 1
-    local rotateBits = 5
-    local rotateMask = lshift(1, rotateBits) - 1
 
-    -- Generate random bit patterns
-    local patterns = GeneratePatterns(numPatterns, patternBits, bitsPerPattern)
+    -- Get patterns from cache (shared reference)
+    local patterns = GetPatterns(numPatterns, bitsPerPattern)
 
     -- Initialize bit array
     local bits = {}
@@ -220,22 +229,16 @@ function LibPatternedBloomFilter.New(capacity, falsePositiveRate, numPatterns, b
     return setmetatable({
         numBits = numBits,
         numIntegers = numIntegers,
-        falsePositiveRate = falsePositiveRate,
-        numItems = capacity,
-        patterns = patterns,
         numPatterns = numPatterns,
-        patternBits = patternBits,
+        patterns = patterns,
         bitsPerPattern = bitsPerPattern,
         patternIndexBits = patternIndexBits,
         patternIndexMask = patternIndexMask,
-        rotateBits = rotateBits,
-        rotateMask = rotateMask,
-        itemCount = 0,
         bits = bits,
     }, LibPatternedBloomFilter)
 end
 
---- Insert a value into the patterned bloom filter.
+--- Insert a value into the filter.
 --- @param value any Value to insert.
 function LibPatternedBloomFilter:Insert(value)
     assert(value ~= nil, "value cannot be nil")
@@ -243,15 +246,14 @@ function LibPatternedBloomFilter:Insert(value)
     local mask = ConstructMask(self, hash)
 
     -- Use high bits of hash to determine which integer to update
-    local offset = rshift(hash, self.patternIndexBits + self.rotateBits)
+    local offset = rshift(hash, self.patternIndexBits + ROTATE_BITS)
     local idx = (offset % self.numIntegers) + 1
 
     -- Apply pattern to single integer
     self.bits[idx] = bor(self.bits[idx], mask)
-    self.itemCount = self.itemCount + 1
 end
 
---- Determine if a value is possibly in the patterned bloom filter.
+--- Determine if a value is possibly in the filter.
 --- @param value any Value to check.
 --- @return boolean result True if value might be in the set, false if definitely not.
 function LibPatternedBloomFilter:Contains(value)
@@ -260,83 +262,70 @@ function LibPatternedBloomFilter:Contains(value)
     local mask = ConstructMask(self, hash)
 
     -- Use same offset calculation as Insert
-    local offset = rshift(hash, self.patternIndexBits + self.rotateBits)
+    local offset = rshift(hash, self.patternIndexBits + ROTATE_BITS)
     local idx = (offset % self.numIntegers) + 1
 
     -- Check if all bits in pattern are set at this location
     return band(self.bits[idx], mask) == mask
 end
 
---- Export the patterned bloom filter state to a compact representation.
---- @return LibPatternedBloomFilterState state Compact representation of the patterned bloom filter.
+--- Export the current state of the filter.
+--- @return LibPatternedBloomFilterState state Compact representation of the filter.
 function LibPatternedBloomFilter:Export()
     return {
         self.numBits,
         self.numIntegers,
         self.numPatterns,
-        self.patternBits,
         self.bitsPerPattern,
-        self.itemCount,
         self.bits,
     }
 end
 
---- Import a new patterned bloom filter from a compact representation.
---- @param state LibPatternedBloomFilterState Compact representation of the patterned bloom filter.
---- @return LibPatternedBloomFilter instance The reconstructed Patterned Bloom Filter instance.
+--- Import a new Patterned Bloom Filter from a compact representation.
+--- @param state LibPatternedBloomFilterState Compact representation of the filter.
+--- @return LibPatternedBloomFilter instance The imported Patterned Bloom Filter instance.
 function LibPatternedBloomFilter.Import(state)
     assert(state and type(state) == "table", "state must be a table")
     assert(state[1] and state[1] > 0, "invalid numBits in state")
     assert(state[2] and state[2] > 0, "invalid numIntegers in state")
     assert(state[3] and state[3] > 0, "invalid numPatterns in state")
-    assert(state[4] and state[4] > 0, "invalid patternBits in state")
-    assert(state[5] and state[5] > 0, "invalid bitsPerPattern in state")
-    assert(state[6] and state[6] >= 0, "invalid itemCount in state")
-    assert(state[7] and type(state[7]) == "table", "invalid bits array in state")
+    assert(state[4] and state[4] > 0, "invalid bitsPerPattern in state")
+    assert(state[5] and type(state[5]) == "table", "invalid bits array in state")
     local numBits = state[1]
     local numIntegers = state[2]
     local numPatterns = state[3]
-    local patternBits = state[4]
-    local bitsPerPattern = state[5]
-    local itemCount = state[6]
-    local bits = state[7]
+    local bitsPerPattern = state[4]
+    local bits = state[5]
 
     -- Calculate derived fields
     local patternIndexBits = floor(log(numPatterns) / LOG2)
     local patternIndexMask = numPatterns - 1
-    local rotateBits = 5
-    local rotateMask = lshift(1, rotateBits) - 1
 
-    -- Regenerate patterns deterministically (same as on creation)
-    local patterns = GeneratePatterns(numPatterns, patternBits, bitsPerPattern)
+    -- Get patterns from cache (shared reference)
+    local patterns = GetPatterns(numPatterns, bitsPerPattern)
 
     return setmetatable({
         numBits = numBits,
         numIntegers = numIntegers,
         numPatterns = numPatterns,
-        patternBits = patternBits,
+        patterns = patterns,
         bitsPerPattern = bitsPerPattern,
-        itemCount = itemCount,
         patternIndexBits = patternIndexBits,
         patternIndexMask = patternIndexMask,
-        rotateBits = rotateBits,
-        rotateMask = rotateMask,
-        patterns = patterns,
         bits = bits,
     }, LibPatternedBloomFilter)
 end
 
---- Clear all values from the patterned bloom filter.
+--- Clear all values from the filter.
 function LibPatternedBloomFilter:Clear()
     for i = 1, self.numIntegers do
         self.bits[i] = 0
     end
-    self.itemCount = 0
 end
 
---- Estimate the current false positive rate of the patterned bloom filter.
+--- Estimate the current false positive rate (FPR) of the filter based on current load factor.
 --- @return number fpr Estimated false positive rate.
-function LibPatternedBloomFilter:GetFalsePositiveRate()
+function LibPatternedBloomFilter:EstimateFalsePositiveRate()
     -- Count set bits
     local bitsSet = 0
     for i = 1, self.numIntegers do
@@ -348,8 +337,10 @@ function LibPatternedBloomFilter:GetFalsePositiveRate()
         end
     end
 
-    -- FPR ≈ (bitsSet / numBits)^k
-    -- For patterned bloom, k ≈ bitsPerPattern
+    -- FPR ≈ l^k
+    -- Where:
+    --   l = fill ratio = bitsSet / numBits
+    --   k = number of bits set per pattern
     local fillRatio = bitsSet / self.numBits
     return fillRatio ^ self.bitsPerPattern
 end
@@ -364,7 +355,7 @@ local function RunLibPatternedBloomFilterTests()
     print("=== LibPatternedBloomFilter Tests ===")
 
     -- Test 1: Basic insertion and membership
-    local pbf = LibPatternedBloomFilter.New(100, 0.01)
+    local pbf = LibPatternedBloomFilter.New(100)
     assert(not pbf:Contains("item1"), "Test 1 Failed: Empty filter should not contain items")
 
     pbf:Insert("item1")
@@ -376,7 +367,7 @@ local function RunLibPatternedBloomFilterTests()
     print("Test 1 PASSED: Basic insertion and membership")
 
     -- Test 2: False positives vs true negatives
-    local testPbf = LibPatternedBloomFilter.New(100000, 0.01)
+    local testPbf = LibPatternedBloomFilter.New(100000)
     for i = 1, 50000 do
         local item = "test_" .. i
         testPbf:Insert(item)
@@ -392,12 +383,12 @@ local function RunLibPatternedBloomFilterTests()
     end
 
     local actualFPR = falsePositives / testCount
-    local estimatedFPR = testPbf:GetFalsePositiveRate()
+    local estimatedFPR = testPbf:EstimateFalsePositiveRate()
     print(string.format("Test 2 PASSED: FP Rate - Actual: %.4f, Estimated: %.4f", actualFPR, estimatedFPR))
     assert(actualFPR < 0.1, "Test 2 Failed: False positive rate too high")
 
     -- Test 3: Export and Import
-    local pbf3 = LibPatternedBloomFilter.New(100, 0.01)
+    local pbf3 = LibPatternedBloomFilter.New(100)
     for i = 1, 100 do
         pbf3:Insert("export_" .. i)
     end
@@ -411,7 +402,7 @@ local function RunLibPatternedBloomFilterTests()
     print("Test 3 PASSED: Export and Import")
 
     -- Test 4: Clear functionality
-    local pbf4 = LibPatternedBloomFilter.New(100, 0.01)
+    local pbf4 = LibPatternedBloomFilter.New(100)
     pbf4:Insert("clear1")
     pbf4:Insert("clear2")
     assert(pbf4:Contains("clear1"), "Test 4 Failed: Should contain clear1 before clear")
@@ -422,7 +413,7 @@ local function RunLibPatternedBloomFilterTests()
     print("Test 4 PASSED: Clear functionality")
 
     -- Test 5: No false negatives (critical property)
-    local pbf5 = LibPatternedBloomFilter.New(100000, 0.01)
+    local pbf5 = LibPatternedBloomFilter.New(100000)
     local items = {}
     for i = 1, 100000 do
         items[i] = "item_" .. i
@@ -446,8 +437,8 @@ local function RunLibPatternedBloomFilterTests()
     local export6b = pbf6b:Export()
 
     assert(#export6a == #export6b, "Test 6 Failed: Export sizes should match")
-    local export6aBits = export6a[7]
-    local export6bBits = export6b[7]
+    local export6aBits = export6a[5]
+    local export6bBits = export6b[5]
     assert(#export6aBits == #export6bBits, "Test 6 Failed: Bit array sizes should match")
     for i = 1, #export6aBits do -- Compare bits
         assert(export6aBits[i] == export6bBits[i], "Test 6 Failed: Bit arrays should be identical")
