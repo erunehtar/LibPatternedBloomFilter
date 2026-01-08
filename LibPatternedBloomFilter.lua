@@ -49,9 +49,12 @@ local tinsert = table.insert
 
 -- Constants
 local LOG2 = log(2)
-local ROTATE_BITS = 5 -- Number of bits for rotation (32 possible rotations)
+local DEFAULT_FALSE_POSITIVE_RATE = 0.01       -- Default: 1% FPR
+local DEFAULT_NUM_PATTERNS = 256               -- Default: 256 patterns (8 bits for index)
+local DEFAULT_BITS_PER_PATTERN = 4             -- Default: 4 bits set per pattern
+local ROTATE_BITS = 5                          -- Number of bits for rotation (32 possible rotations)
 local ROTATE_MASK = lshift(1, ROTATE_BITS) - 1 -- Mask for rotation bits
-local PATTERN_BITS = 31 -- Number of bits in each pattern (31 to avoid sign bit issues)
+local PATTERN_BITS = 31                        -- Number of bits in each pattern (31 to avoid sign bit issues)
 
 -- Module-level pattern cache
 local patternCache = {}
@@ -130,8 +133,8 @@ end
 local function RotateLeft32(value, shift)
     shift = shift % 32 -- Ensure shift is 0-31
     if shift == 0 then return value end
-    local left = (value * (2^shift)) % 4294967296
-    local right = floor(value / (2^(32 - shift)))
+    local left = (value * (2 ^ shift)) % 4294967296
+    local right = floor(value / (2 ^ (32 - shift)))
     return left + right
 end
 
@@ -196,9 +199,9 @@ LibPatternedBloomFilter.__index = LibPatternedBloomFilter
 --- @return LibPatternedBloomFilter instance The new Patterned Bloom Filter instance.
 function LibPatternedBloomFilter.New(capacity, falsePositiveRate, numPatterns, bitsPerPattern)
     assert(capacity and capacity > 0, "numItems must be a positive number")
-    falsePositiveRate = falsePositiveRate or 0.01 -- Default: 1% FPR
-    numPatterns = numPatterns or 256              -- Default: 256 patterns (8 bits for index)
-    bitsPerPattern = bitsPerPattern or 4          -- Default: 4 bits set per pattern
+    falsePositiveRate = falsePositiveRate or DEFAULT_FALSE_POSITIVE_RATE
+    numPatterns = numPatterns or DEFAULT_NUM_PATTERNS
+    bitsPerPattern = bitsPerPattern or DEFAULT_BITS_PER_PATTERN
     assert(falsePositiveRate > 0 and falsePositiveRate < 1, "falsePositiveRate must be between 0 and 1")
     assert(numPatterns > 0 and band(numPatterns, numPatterns - 1) == 0, "numPatterns must be a power of two")
     assert(bitsPerPattern > 0 and bitsPerPattern <= PATTERN_BITS, "bitsPerPattern must be between 1 and 31")
@@ -345,6 +348,9 @@ function LibPatternedBloomFilter:EstimateFalsePositiveRate()
     return fillRatio ^ self.bitsPerPattern
 end
 
+-- Generate the patterns representing the default parameters on load (should take less than 1 millisecond)
+GetPatterns(DEFAULT_NUM_PATTERNS, DEFAULT_BITS_PER_PATTERN)
+
 -------------------------------------------------------------------------------
 -- TESTS: Verify Patterned Bloom Filter correctness
 -------------------------------------------------------------------------------
@@ -426,8 +432,8 @@ local function RunLibPatternedBloomFilterTests()
     print("Test 5 PASSED: No false negatives")
 
     -- Test 6: Deterministic pattern generation
-    local pbf6a = LibPatternedBloomFilter.New(100, 0.01, 256, 4)
-    local pbf6b = LibPatternedBloomFilter.New(100, 0.01, 256, 4)
+    local pbf6a = LibPatternedBloomFilter.New(100, DEFAULT_FALSE_POSITIVE_RATE, DEFAULT_NUM_PATTERNS, DEFAULT_BITS_PER_PATTERN)
+    local pbf6b = LibPatternedBloomFilter.New(100, DEFAULT_FALSE_POSITIVE_RATE, DEFAULT_NUM_PATTERNS, DEFAULT_BITS_PER_PATTERN)
 
     pbf6a:Insert("pattern_test")
     pbf6b:Insert("pattern_test")
