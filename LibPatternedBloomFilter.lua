@@ -198,7 +198,7 @@ LibPatternedBloomFilter.__index = LibPatternedBloomFilter
 --- @param bitsPerPattern number? Number of bits set per pattern (between 1 and 31, default: 4).
 --- @return LibPatternedBloomFilter instance The new Patterned Bloom Filter instance.
 function LibPatternedBloomFilter.New(capacity, falsePositiveRate, numPatterns, bitsPerPattern)
-    assert(capacity and capacity > 0, "numItems must be a positive number")
+    assert(capacity and capacity > 0, "capacity must be greater than 0")
     falsePositiveRate = falsePositiveRate or DEFAULT_FALSE_POSITIVE_RATE
     numPatterns = numPatterns or DEFAULT_NUM_PATTERNS
     bitsPerPattern = bitsPerPattern or DEFAULT_BITS_PER_PATTERN
