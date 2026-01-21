@@ -96,11 +96,12 @@ local newFilter = LibPatternedBloomFilter.Import(state)
 
 ## API
 
-### LibPatternedBloomFilter.New(capacity, falsePositiveRate, numPatterns, bitsPerPattern)
+### LibPatternedBloomFilter.New(capacity, seed, falsePositiveRate, numPatterns, bitsPerPattern)
 
 Create a new Patterned Bloom Filter instance.
 
 - `capacity`: Capacity of the filter (expected number of values).
+- `seed`: Optional seed for hash function (default: 0).
 - `falsePositiveRate`: Desired false positive rate (between 0.0 and 1.0, default: 0.01 which means 1%).
 - `numPatterns`: Number of unique bit patterns to generate (default: 256).
 - `bitsPerPattern`: Number of bits set per pattern (between 1 and 31, default: 4).
